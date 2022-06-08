@@ -87,6 +87,15 @@ To evaluate model on dataset,run:
 ```
 python3 -m torch.distributed.launch --nproc_per_node <num-of-gpus-to-use> --master_port 12345  main.py --eval --cfg <config-file> --dataset <dataset-name> --resume <checkpoint> [--batch-size <batch-size-per-gpu>]
 ```
+### Orichid Dataset
+#### Training
+```
+python -m torch.distributed.launch --nproc_per_node 1 --master_port 12345 main.py --pretrain ./pretrained_model/metafg_0_inat21_384.pth --dataset orchid --opts DATA.IMG_SIZE 384 --batch-size 16
+```
+#### Inference
+```
+python my_inference.py --img-path ./datasets/<dataset-folder>/ --output <output-file-path>/<output-file-name>.csv
+```
 ## Main Result
 #### ImageNet-1k 
 | Name       | Resolution   | #Param   |  #FLOPS   | Throughput   | Top-1 acc |
