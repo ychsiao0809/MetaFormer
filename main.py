@@ -13,7 +13,7 @@ from timm.utils import accuracy, AverageMeter
 
 from config import get_config
 from models import build_model
-from data import build_loader
+from data import build_loader, read_dataset
 from lr_scheduler import build_scheduler
 from optimizer import build_optimizer
 from logger import create_logger
@@ -28,7 +28,8 @@ except ImportError:
 
 def parse_option():
     parser = argparse.ArgumentParser('MetaFG training and evaluation script', add_help=False)
-    parser.add_argument('--cfg', type=str, required=True, metavar="FILE", help='path to config file', )
+    parser.add_argument('--cfg', type=str, metavar="FILE", default='./configs/MetaFG_0_384.yaml',
+                        help='path to config file', )
     parser.add_argument(
         "--opts",
         help="Modify config options by adding 'KEY VALUE' pairs. ",
@@ -37,7 +38,7 @@ def parse_option():
     )
 
     # easy config modification
-    parser.add_argument('--batch-size', type=int, help="batch size for single GPU")
+    parser.add_argument('--batch-size', type=int, default=32, help="batch size for single GPU")
     parser.add_argument('--data-path',default='./imagenet', type=str, help='path to dataset')
     parser.add_argument('--zip', action='store_true', help='use zipped dataset instead of folder dataset')
     parser.add_argument('--cache-mode', type=str, default='part', choices=['no', 'full', 'part'],
@@ -45,32 +46,32 @@ def parse_option():
                              'full: cache all data, '
                              'part: sharding the dataset into nonoverlapping pieces and only cache one piece')
     parser.add_argument('--resume', help='resume from checkpoint')
-    parser.add_argument('--accumulation-steps', type=int, help="gradient accumulation steps")
+    parser.add_argument('--accumulation-steps', type=int, default=2, help="gradient accumulation steps")
     parser.add_argument('--use-checkpoint', action='store_true',
                         help="whether to use gradient checkpointing to save memory")
     parser.add_argument('--amp-opt-level', type=str, default='O1', choices=['O0', 'O1', 'O2'],
                         help='mixed precision opt level, if O0, no amp is used')
     parser.add_argument('--output', default='output', type=str, metavar='PATH',
                         help='root of output folder, the full path is <output>/<model_name>/<tag> (default: output)')
-    parser.add_argument('--tag', help='tag of experiment')
+    parser.add_argument('--tag', default='orchid', help='tag of experiment')
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
     parser.add_argument('--throughput', action='store_true', help='Test throughput only')
     
     parser.add_argument('--num-workers', type=int, 
                         help="num of workers on dataloader ")
     
-    parser.add_argument('--lr', type=float, metavar='LR',
+    parser.add_argument('--lr', type=float, metavar='LR', default=5e-5,
                         help='learning rate')
-    parser.add_argument('--weight-decay', type=float,
+    parser.add_argument('--weight-decay', type=float, default=0.05,
                         help='weight decay (default: 0.05 for adamw)')
     
-    parser.add_argument('--min-lr', type=float,
+    parser.add_argument('--min-lr', type=float, default=5e-7,
                         help='learning rate')
-    parser.add_argument('--warmup-lr', type=float,
+    parser.add_argument('--warmup-lr', type=float, default=5e-8,
                         help='warmup learning rate')
-    parser.add_argument('--epochs', type=int,
+    parser.add_argument('--epochs', type=int, default=300,
                         help="epochs")
-    parser.add_argument('--warmup-epochs', type=int,
+    parser.add_argument('--warmup-epochs', type=int, default=20,
                         help="epochs")
     
     parser.add_argument('--dataset', type=str,
@@ -78,14 +79,14 @@ def parse_option():
     parser.add_argument('--lr-scheduler-name', type=str,
                         help='lr scheduler name,cosin linear,step')
     
-    parser.add_argument('--pretrain', type=str,
-                        help='pretrain')
+    parser.add_argument('--pretrain', type=str, help='pretrain')
     
     parser.add_argument('--tensorboard', action='store_true', help='using tensorboard')
     
     
     # distributed training
-    parser.add_argument("--local_rank", type=int, required=True, help='local rank for DistributedDataParallel')
+    # parser.add_argument("--local_rank", type=int, required=True, help='local rank for DistributedDataParallel')
+    parser.add_argument("--local_rank", type=int, default=0, help='local rank for DistributedDataParallel')
 
     args, unparsed = parser.parse_known_args()
 
@@ -95,7 +96,8 @@ def parse_option():
 
 
 def main(config):
-    dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn = build_loader(config)
+    # dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn = build_loader(config)
+    dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn = read_dataset(config)
     logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")
     model = build_model(config)
     model.cuda()
@@ -126,6 +128,7 @@ def main(config):
         if config.EVAL_MODE:
             acc1, acc5, loss = validate(config, data_loader_val, model)
             logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+            print("finish eval")
             return
 
     if config.TRAIN.AUTO_RESUME:
@@ -144,7 +147,9 @@ def main(config):
         logger.info(f"**********normal test***********")
         max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, logger)
         acc1, acc5, loss = validate(config, data_loader_val, model)
+        # acc1, acc5, loss = validate(config, data_loader_val, model_without_ddp)
         logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        print("finish resume")
         if config.DATA.ADD_META:
             logger.info(f"**********mask meta test***********")
             acc1, acc5, loss = validate(config, data_loader_val, model,mask_meta=True)
@@ -159,10 +164,11 @@ def main(config):
     logger.info("Start training")
     start_time = time.time()
     for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
-        data_loader_train.sampler.set_epoch(epoch)      
+        # data_loader_train.sampler.set_epoch(epoch)
         train_one_epoch_local_data(config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler)
+        # train_one_epoch_local_data(config, model, criterion, data_loader_train, optimizer, epoch, lr_scheduler)
         if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
-            save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, logger)
+                    save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, logger)
         
         logger.info(f"**********normal test***********")
         acc1, acc5, loss = validate(config, data_loader_val, model)
@@ -178,6 +184,7 @@ def main(config):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     logger.info('Training time {}'.format(total_time_str))
 def train_one_epoch_local_data(config, model, criterion, data_loader, optimizer, epoch, mixup_fn, lr_scheduler,tb_logger=None):
+# def train_one_epoch_local_data(config, model, criterion, data_loader, optimizer, epoch, lr_scheduler,tb_logger=None):
     model.train()
     if hasattr(model.module,'cur_epoch'):
         model.module.cur_epoch = epoch
@@ -204,6 +211,8 @@ def train_one_epoch_local_data(config, model, criterion, data_loader, optimizer,
         samples = samples.cuda(non_blocking=True)
         targets = targets.cuda(non_blocking=True)
 
+        if len(samples) % 2 != 0:
+            continue
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
         if config.DATA.ADD_META:

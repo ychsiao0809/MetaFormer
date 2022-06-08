@@ -1,4 +1,6 @@
-from transformers import AutoTokenizer, AutoModel
+# from transformers import AutoTokenizer, AutoModel
+import os
+from os import listdir
 import torch
 from PIL import Image
 from config import get_inference_config
@@ -7,6 +9,7 @@ from torch.autograd import Variable
 from torchvision.transforms import transforms
 import numpy as np
 import argparse
+from tqdm import tqdm
 
 try:
     from apex import amp
@@ -26,20 +29,6 @@ def model_config(config_path):
     args = Namespace(cfg=config_path)
     config = get_inference_config(args)
     return config
-
-
-def read_class_names(file_path):
-    file = open(file_path, 'r')
-    lines = file.readlines()
-    class_list = []
-
-    for l in lines:
-        line = l.strip().split()
-        # class_list.append(line[0])
-        class_list.append(line[1][4:])
-
-    classes = tuple(class_list)
-    return classes
 
 
 class GenerateEmbedding:
@@ -74,9 +63,9 @@ class Inference:
         self.model_path = model_path
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         # self.classes = ("cat", "dog")
-        self.classes = read_class_names(r"D:\dataset\CUB_200_2011\CUB_200_2011\classes_custom.txt")
 
         self.config = model_config(self.config_path)
+        self.classes = range(self.config.MODEL.NUM_CLASSES)
         self.model = build_model(self.config)
         self.checkpoint = torch.load(self.model_path, map_location='cpu')
         self.model.load_state_dict(self.checkpoint['model'], strict=False)
@@ -84,42 +73,46 @@ class Inference:
         self.model.cuda()
 
         self.transform_img = transforms.Compose([
-            transforms.Resize((224, 224), interpolation=Image.BILINEAR),
-            transforms.ToTensor(), # transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-            transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
+            transforms.Resize((self.config.DATA.IMG_SIZE, self.config.DATA.IMG_SIZE), interpolation=Image.BILINEAR),
+            transforms.ToTensor()
         ])
 
-    def infer(self, img_path, meta_data_path):
-        _, _, meta = GenerateEmbedding(meta_data_path).generate()
-        meta = meta.cuda()
-        img = Image.open(img_path).convert('RGB')
-        img = self.transform_img(img)
-        img.unsqueeze_(0)
-        img = img.cuda()
-        img = Variable(img).to(self.device)
-        out = self.model(img, meta)
+    def infer(self, img_path, output_file):
+        with open(output_file, 'w') as f:
+            f.write("filename,category\n")
+            for img_name in tqdm(listdir(img_path)):
+                if '.jpg' in img_name:
+                    img = Image.open(os.path.join(img_path, img_name))
+                    img = self.transform_img(img)
+                    img.unsqueeze_(0)
+                    img = img.cuda(non_blocking=True)
+                    img = Variable(img).to(self.device)
+                    out = self.model(img)
 
-        _, pred = torch.max(out.data, 1)
-        predict = self.classes[pred.data.item()]
+                    _, pred = torch.max(out.data, 1)
+                    # predict = self.classes[pred.data.item()]
+                    f.write("%s,%d\n" % (img_name, pred.data.item()))
         # print(Fore.MAGENTA + f"The Prediction is: {predict}")
-        return predict
+        return
 
 
 def parse_option():
     parser = argparse.ArgumentParser('MetaFG Inference script', add_help=False)
-    parser.add_argument('--cfg', type=str, default='D:/pycharmprojects/MetaFormer/configs/MetaFG_meta_bert_1_224.yaml', metavar="FILE", help='path to config file', )
+    parser.add_argument('--cfg', type=str, default='./configs/MetaFG_0_384.yaml', metavar="FILE", help='path to config file', )
     # easy config modification
-    parser.add_argument('--model-path', default='D:\pycharmprojects\MetaFormer\output\MetaFG_meta_1\cub_200\ckpt_epoch_92.pth', type=str, help="path to model data")
-    parser.add_argument('--img-path', default=r"D:\dataset\CUB_200_2011\CUB_200_2011\images\012.Yellow_headed_Blackbird\Yellow_Headed_Blackbird_0003_8337.jpg", type=str, help='path to image')
-    parser.add_argument('--meta-path', default=r"D:\dataset\CUB_200_2011\text_c10\012.Yellow_headed_Blackbird\Yellow_Headed_Blackbird_0003_8337.txt", type=str, help='path to meta data')
+    parser.add_argument('--model-path', default='./output/MetaFG_0/orchid/latest.pth', type=str, help="path to model data")
+    parser.add_argument('--img-path', default='./datasets/orchid', type=str, help='path to image')
+    parser.add_argument('--output', default='./orchid.csv', type=str, help='predicted output file')
+    # parser.add_argument('--meta-path', default=r"D:\dataset\CUB_200_2011\text_c10\012.Yellow_headed_Blackbird\Yellow_Headed_Blackbird_0003_8337.txt", type=str, help='path to meta data')
     args = parser.parse_args()
     return args
 
 
 if __name__ == '__main__':
     args = parse_option()
-    result = Inference(config_path=args.cfg,
-                       model_path=args.model_path).infer(img_path=args.img_path, meta_data_path=args.meta_path)
-    print("Predicted: ", result)
-
+    config = model_config(args.cfg)
+    # print(config.MODEL.NUM_CLASSES)
+    Inference(config_path=args.cfg,
+              model_path=args.model_path).infer(img_path=args.img_path, output_file=args.output)
+    
 # Usage: python inference.py --cfg 'path/to/cfg' --model_path 'path/to/model' --img-path 'path/to/img' --meta-path 'path/to/meta'
